@@ -10,11 +10,23 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import ChartCard from '@/components/ChartCard';
+
+function sendToComparator(m: { numero?: string; titulo?: string; extracto?: string } | undefined | null, router: ReturnType<typeof useRouter>) {
+    if (!m) return;
+    sessionStorage.setItem('comparatorPreload', JSON.stringify({
+        numero: m.numero || 'S/N',
+        titulo: m.titulo || '',
+        extracto: m.extracto || '',
+    }));
+    router.push('/comparator');
+}
 
 export default function DashboardPage() {
     const { user } = useAuth();
     const queryClient = useQueryClient();
+    const router = useRouter();
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
     const { data: summary, isLoading: loadingSummary } = useQuery({
@@ -101,13 +113,22 @@ export default function DashboardPage() {
                                             <span className="text-xs px-2.5 py-1 bg-primary/10 text-primary rounded-lg font-semibold">
                                                 {finding.type === 'keyword' ? 'Keyword' : 'Tema'}
                                             </span>
-                                            <button
-                                                onClick={() => addToWatchlistMutation.mutate(finding.measureId)}
-                                                disabled={addToWatchlistMutation.isPending}
-                                                className="text-xs px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-primary hover:text-white hover:border-primary transition-all disabled:opacity-50 shadow-sm"
-                                            >
-                                                {addToWatchlistMutation.isPending ? '...' : '+ Watchlist'}
-                                            </button>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => sendToComparator(finding.measure, router)}
+                                                    title="Enviar al Comparador"
+                                                    className="text-xs px-2.5 py-1 bg-violet-50 border border-violet-200 text-violet-700 rounded-lg font-medium hover:bg-violet-100 hover:border-violet-300 transition-all"
+                                                >
+                                                    ⚖️ Comparar
+                                                </button>
+                                                <button
+                                                    onClick={() => addToWatchlistMutation.mutate(finding.measureId)}
+                                                    disabled={addToWatchlistMutation.isPending}
+                                                    className="text-xs px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-primary hover:text-white hover:border-primary transition-all disabled:opacity-50 shadow-sm"
+                                                >
+                                                    {addToWatchlistMutation.isPending ? '...' : '+ Watchlist'}
+                                                </button>
+                                            </div>
                                         </div>
                                         <p className="text-sm font-semibold text-slate-900 leading-relaxed mb-2 line-clamp-2">
                                             {finding.measure?.numero}: {finding.measure?.titulo || 'Sin título'}
@@ -143,9 +164,16 @@ export default function DashboardPage() {
                                         <p className="text-xs font-semibold text-slate-900 line-clamp-2 mb-1.5">
                                             {item.measure?.numero || item.measureNumber || item.measureId}
                                         </p>
-                                        <p className="text-xs text-slate-600 line-clamp-2">
+                                        <p className="text-xs text-slate-600 line-clamp-2 mb-2">
                                             {item.measure?.titulo || 'Sin título'}
                                         </p>
+                                        <button
+                                            onClick={() => sendToComparator(item.measure || { numero: item.measureNumber || item.measureId, titulo: item.measure?.titulo || '', extracto: '' }, router)}
+                                            title="Enviar al Comparador"
+                                            className="text-xs px-2 py-1 bg-violet-50 border border-violet-200 text-violet-700 rounded font-medium hover:bg-violet-100 transition-colors"
+                                        >
+                                            ⚖️ Comparar
+                                        </button>
                                     </div>
                                 ))
                             )}

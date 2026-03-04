@@ -1,12 +1,23 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { fetchMeasures } from '@/lib/api';
+
+function sendToComparator(m: any, router: ReturnType<typeof useRouter>) {
+    sessionStorage.setItem('comparatorPreload', JSON.stringify({
+        numero: m.numero || 'S/N',
+        titulo: m.titulo || '',
+        extracto: m.extracto || '',
+    }));
+    router.push('/comparator');
+}
 
 export default function MedidasPage() {
     const [measures, setMeasures] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const router = useRouter();
 
     useEffect(() => {
         fetchMeasures()
@@ -63,12 +74,13 @@ export default function MedidasPage() {
                                 <th className="px-6 py-4 font-semibold text-slate-700">Fecha</th>
                                 <th className="px-6 py-4 font-semibold text-slate-700">Autor(es)</th>
                                 <th className="px-6 py-4 font-semibold text-slate-700">Link</th>
+                                <th className="px-6 py-4 font-semibold text-slate-700">Acciones</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                             {measures.length === 0 ? (
                                 <tr>
-                                    <td colSpan={5} className="px-6 py-12 text-center text-slate-500">
+                                    <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
                                         No se encontraron medidas recientes.
                                     </td>
                                 </tr>
@@ -88,7 +100,6 @@ export default function MedidasPage() {
                                         </td>
                                         <td className="px-6 py-4 text-slate-500">
                                             <div className="line-clamp-1" title={m.extracto}>
-                                                {/* No hay campo autores explícito, probamos extracto o N/A */}
                                                 {m.autores || 'N/A'}
                                             </div>
                                         </td>
@@ -101,6 +112,15 @@ export default function MedidasPage() {
                                             >
                                                 Ver en SUTRA ↗
                                             </a>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <button
+                                                onClick={() => sendToComparator(m, router)}
+                                                title="Enviar al Comparador de Leyes"
+                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-violet-700 bg-violet-50 border border-violet-200 rounded-lg hover:bg-violet-100 hover:border-violet-300 transition-colors whitespace-nowrap"
+                                            >
+                                                ⚖️ Comparar
+                                            </button>
                                         </td>
                                     </tr>
                                 ))

@@ -1,8 +1,8 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useState } from 'react';
-import { Loader2, AlertCircle, Users, TrendingUp, FileText, RotateCcw } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Loader2, AlertCircle, Users, TrendingUp, FileText, RotateCcw, Upload } from 'lucide-react';
 import type { CompareResponseBody, AiAnalysis } from '@/app/api/compare/route';
 
 // Monaco DiffEditor must be loaded client-side only (no SSR)
@@ -15,6 +15,11 @@ const DiffEditor = dynamic(
 
 type Phase = 'input' | 'loading' | 'result';
 
+interface PreloadInfo {
+  numero: string;
+  titulo: string;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ComparatorPage() {
@@ -23,6 +28,64 @@ export default function ComparatorPage() {
   const [phase, setPhase] = useState<Phase>('input');
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CompareResponseBody | null>(null);
+  const [preload, setPreload] = useState<PreloadInfo | null>(null);
+  const [loadingPdf, setLoadingPdf] = useState<'left' | 'right' | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  const leftPdfRef = useRef<HTMLInputElement>(null);
+  const rightPdfRef = useRef<HTMLInputElement>(null);
+
+  // ── Read pre-loaded measure from sessionStorage (set by "Comparar" buttons) ──
+  useEffect(() => {
+    const raw = sessionStorage.getItem('comparatorPreload');
+    if (!raw) return;
+    try {
+      const { numero, titulo, extracto } = JSON.parse(raw);
+      const body = extracto?.trim()
+        ? extracto
+        : '(Sin extracto disponible. Carga el PDF completo usando el botón "Cargar PDF" de arriba.)';
+      setOriginalText(`[${numero}] ${titulo}\n\n${body}`);
+      setPreload({ numero, titulo });
+    } catch {
+      // malformed sessionStorage entry — ignore
+    } finally {
+      sessionStorage.removeItem('comparatorPreload');
+    }
+  }, []);
+
+  // ── PDF extraction ───────────────────────────────────────────────────────────
+
+  async function handlePdfUpload(file: File, side: 'left' | 'right') {
+    setPdfError(null);
+    setLoadingPdf(side);
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+      const res = await fetch('/api/extract-pdf', { method: 'POST', body: fd });
+      const json = await res.json();
+
+      if (!res.ok) {
+        setPdfError(json.error || 'Error al procesar el PDF');
+        return;
+      }
+
+      if (side === 'left') {
+        setOriginalText(json.text);
+        setPreload(null); // preload replaced by actual PDF content
+      } else {
+        setModifiedText(json.text);
+      }
+    } catch {
+      setPdfError('No se pudo conectar con el servidor para procesar el PDF');
+    } finally {
+      setLoadingPdf(null);
+      // Reset file inputs so the same file can be re-selected
+      if (side === 'left' && leftPdfRef.current) leftPdfRef.current.value = '';
+      if (side === 'right' && rightPdfRef.current) rightPdfRef.current.value = '';
+    }
+  }
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
@@ -57,6 +120,8 @@ export default function ComparatorPage() {
     setPhase('input');
     setResult(null);
     setError(null);
+    setPreload(null);
+    setPdfError(null);
   };
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -68,7 +133,7 @@ export default function ComparatorPage() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Comparador de Leyes</h1>
           <p className="text-gray-500 mt-1 text-sm">
-            Ingresa dos textos legislativos para analizar cambios e impacto jurídico con IA.
+            Ingresa o carga dos textos legislativos para analizar cambios e impacto jurídico con IA.
           </p>
         </div>
         {phase === 'result' && (
@@ -93,6 +158,15 @@ export default function ComparatorPage() {
         </div>
       )}
 
+      {/* ── PDF Error Banner ── */}
+      {pdfError && (
+        <div className="mx-8 mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-3">
+          <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <p className="text-amber-800 text-sm">{pdfError}</p>
+          <button onClick={() => setPdfError(null)} className="ml-auto text-amber-500 hover:text-amber-700 text-xs">✕</button>
+        </div>
+      )}
+
       {/* ══════════════════════════════════════════════════════════════════════
           PHASE: INPUT
       ══════════════════════════════════════════════════════════════════════ */}
@@ -100,36 +174,105 @@ export default function ComparatorPage() {
         <div className="flex-1 flex flex-col px-8 pb-8 gap-6">
           {/* Text Areas */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1">
-            {/* Estatuto Vigente */}
+
+            {/* ── Panel Izquierdo: Estatuto Vigente ── */}
             <div className="flex flex-col bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50">
-                <h2 className="font-semibold text-gray-800 text-sm">Estatuto Vigente</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Pega aquí el texto original de la ley</p>
+              {/* Header */}
+              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-gray-800 text-sm">Estatuto Vigente</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">Pega el texto o carga un PDF</p>
+                </div>
+                <label
+                  className={`flex items-center gap-1.5 cursor-pointer px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    loadingPdf === 'left'
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200'
+                  }`}
+                >
+                  {loadingPdf === 'left' ? (
+                    <><Loader2 className="w-3 h-3 animate-spin" /> Extrayendo…</>
+                  ) : (
+                    <><Upload className="w-3 h-3" /> Cargar PDF</>
+                  )}
+                  <input
+                    ref={leftPdfRef}
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    className="hidden"
+                    disabled={loadingPdf !== null || phase === 'loading'}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handlePdfUpload(f, 'left');
+                    }}
+                  />
+                </label>
               </div>
+
+              {/* Preload info banner */}
+              {preload && originalText && (
+                <div className="px-5 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 text-xs text-blue-700">
+                  <span className="font-semibold">📋 {preload.numero}</span>
+                  <span className="truncate text-blue-600">{preload.titulo}</span>
+                  <span className="ml-auto text-blue-400 whitespace-nowrap">· Carga el PDF para texto completo</span>
+                </div>
+              )}
+
               <textarea
                 className="flex-1 p-4 font-mono text-sm text-gray-800 resize-none focus:outline-none placeholder:text-gray-400 min-h-[360px]"
                 placeholder="Artículo 1. — La presente Ley tiene por objeto…"
                 value={originalText}
-                onChange={(e) => setOriginalText(e.target.value)}
-                disabled={phase === 'loading'}
+                onChange={(e) => {
+                  setOriginalText(e.target.value);
+                  if (!e.target.value) setPreload(null);
+                }}
+                disabled={phase === 'loading' || loadingPdf !== null}
               />
               <div className="px-5 py-2 border-t border-gray-100 bg-gray-50 text-xs text-gray-400 text-right">
                 {originalText.length.toLocaleString()} caracteres
               </div>
             </div>
 
-            {/* Propuesta de Enmienda */}
+            {/* ── Panel Derecho: Propuesta de Enmienda ── */}
             <div className="flex flex-col bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50">
-                <h2 className="font-semibold text-gray-800 text-sm">Propuesta de Enmienda</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Pega aquí el texto de la enmienda propuesta</p>
+              {/* Header */}
+              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-gray-800 text-sm">Propuesta de Enmienda</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">Pega el texto o carga un PDF</p>
+                </div>
+                <label
+                  className={`flex items-center gap-1.5 cursor-pointer px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    loadingPdf === 'right'
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 border border-emerald-200'
+                  }`}
+                >
+                  {loadingPdf === 'right' ? (
+                    <><Loader2 className="w-3 h-3 animate-spin" /> Extrayendo…</>
+                  ) : (
+                    <><Upload className="w-3 h-3" /> Cargar PDF</>
+                  )}
+                  <input
+                    ref={rightPdfRef}
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    className="hidden"
+                    disabled={loadingPdf !== null || phase === 'loading'}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handlePdfUpload(f, 'right');
+                    }}
+                  />
+                </label>
               </div>
+
               <textarea
                 className="flex-1 p-4 font-mono text-sm text-gray-800 resize-none focus:outline-none placeholder:text-gray-400 min-h-[360px]"
                 placeholder="Artículo 1. — Se enmienda la Ley para disponer que…"
                 value={modifiedText}
                 onChange={(e) => setModifiedText(e.target.value)}
-                disabled={phase === 'loading'}
+                disabled={phase === 'loading' || loadingPdf !== null}
               />
               <div className="px-5 py-2 border-t border-gray-100 bg-gray-50 text-xs text-gray-400 text-right">
                 {modifiedText.length.toLocaleString()} caracteres
@@ -141,9 +284,9 @@ export default function ComparatorPage() {
           <div className="flex justify-center">
             <button
               onClick={handleAnalyze}
-              disabled={phase === 'loading' || !originalText.trim() || !modifiedText.trim()}
+              disabled={phase === 'loading' || !originalText.trim() || !modifiedText.trim() || loadingPdf !== null}
               className={`inline-flex items-center gap-3 px-10 py-3.5 rounded-xl font-semibold text-base transition-all shadow-lg ${
-                phase === 'loading' || !originalText.trim() || !modifiedText.trim()
+                phase === 'loading' || !originalText.trim() || !modifiedText.trim() || loadingPdf !== null
                   ? 'bg-gray-300 text-gray-500 cursor-not-allowed shadow-none'
                   : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white hover:shadow-xl'
               }`}

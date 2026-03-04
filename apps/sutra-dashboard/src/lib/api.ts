@@ -220,6 +220,11 @@ export async function fetchCommissionNotifications(params?: { limit?: number }) 
     return fetchWithAuth(`/dashboard/commissions${queryString ? `?${queryString}` : ''}`);
 }
 
+// Fetch single measure by ID (returns { measure, history })
+export async function fetchMeasureById(id: string) {
+    return fetchWithAuth(`/measures/${id}`);
+}
+
 // Add measure to watchlist by ID
 export async function addMeasureToWatchlist(measureId: string) {
     return fetchWithAuth('/config/watchlist', {
