@@ -1,558 +1,325 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { Upload, FileText, Search, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { useState } from 'react';
+import { Loader2, AlertCircle, Users, TrendingUp, FileText, RotateCcw } from 'lucide-react';
+import type { CompareResponseBody, AiAnalysis } from '@/app/api/compare/route';
 
-const COMPARATOR_API = '/api/comparator';
+// Monaco DiffEditor must be loaded client-side only (no SSR)
+const DiffEditor = dynamic(
+  () => import('@monaco-editor/react').then((m) => m.DiffEditor),
+  { ssr: false, loading: () => <div className="flex items-center justify-center h-full text-gray-400 text-sm">Cargando editor…</div> },
+);
 
-type UploadedDoc = {
-  documentId: string;
-  versionId: string;
-  fileName: string;
-  wordCount: number;
-};
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-type ComparisonResult = {
-  comparisonId: string;
-  status: string;
-  sourceDocument: { title: string };
-  targetDocument: { title: string };
-  summary?: string;
-  impactScore: number;
-  totalChanges: number;
-  chunkComparisons: Array<{
-    diffHtml: string;
-    changeType?: string;
-    impactScore?: number;
-  }>;
-};
+type Phase = 'input' | 'loading' | 'result';
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ComparatorPage() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'text'>('upload');
-
-  // Upload state
-  const [sourceFile, setSourceFile] = useState<File | null>(null);
-  const [targetFile, setTargetFile] = useState<File | null>(null);
-  const [sourceDoc, setSourceDoc] = useState<UploadedDoc | null>(null);
-  const [targetDoc, setTargetDoc] = useState<UploadedDoc | null>(null);
-
-  // Text input state
-  const [sourceText, setSourceText] = useState('');
-  const [targetText, setTargetText] = useState('');
-
-  // UI state
-  const [loading, setLoading] = useState(false);
-  const [uploadingSource, setUploadingSource] = useState(false);
-  const [uploadingTarget, setUploadingTarget] = useState(false);
-  const [comparing, setComparing] = useState(false);
+  const [originalText, setOriginalText] = useState('');
+  const [modifiedText, setModifiedText] = useState('');
+  const [phase, setPhase] = useState<Phase>('input');
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ComparisonResult | null>(null);
+  const [result, setResult] = useState<CompareResponseBody | null>(null);
 
-  // File upload handler
-  const handleFileUpload = async (file: File, type: 'source' | 'target') => {
-    const setUploading = type === 'source' ? setUploadingSource : setUploadingTarget;
-    const setDoc = type === 'source' ? setSourceDoc : setTargetDoc;
+  // ── Handlers ────────────────────────────────────────────────────────────────
 
-    setUploading(true);
-    setError(null);
+  const handleAnalyze = async () => {
+    if (!originalText.trim() || !modifiedText.trim()) return;
 
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('title', file.name);
-      formData.append('autoIngest', 'true');
-
-      const response = await fetch(`${COMPARATOR_API}/documents/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Upload failed: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-
-      setDoc({
-        documentId: data.documentId,
-        versionId: data.versionId,
-        fileName: data.metadata.fileName,
-        wordCount: data.metadata.wordCount,
-      });
-
-      // Wait for ingestion to complete
-      await waitForIngestion(data.snapshotId);
-
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
-      setDoc(null);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  // Wait for ingestion job to complete
-  const waitForIngestion = async (snapshotId: string, maxAttempts = 30) => {
-    for (let i = 0; i < maxAttempts; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      try {
-        const response = await fetch(`${COMPARATOR_API}/documents/queue/stats`);
-        const stats = await response.json();
-
-        if (stats.active === 0 && stats.waiting === 0) {
-          return; // Processing complete
-        }
-      } catch (err) {
-        console.error('Error checking ingestion status:', err);
-      }
-    }
-
-    throw new Error('Ingestion timeout');
-  };
-
-  // Compare documents
-  const handleCompare = async () => {
-    setComparing(true);
+    setPhase('loading');
     setError(null);
     setResult(null);
 
     try {
-      let sourceVersionId: string;
-      let targetVersionId: string;
-
-      if (activeTab === 'upload') {
-        if (!sourceDoc || !targetDoc) {
-          throw new Error('Please upload both documents');
-        }
-        sourceVersionId = sourceDoc.versionId;
-        targetVersionId = targetDoc.versionId;
-      } else {
-        // For text input, we'd need to create documents first
-        // This is a simplified version
-        throw new Error('Text comparison coming soon');
-      }
-
-      // Start comparison job
-      const compareResponse = await fetch(`${COMPARATOR_API}/comparison/compare`, {
+      const res = await fetch('/api/compare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceVersionId, targetVersionId }),
+        body: JSON.stringify({ originalText, modifiedText }),
       });
 
-      if (!compareResponse.ok) {
-        throw new Error('Comparison failed');
+      if (!res.ok) {
+        throw new Error(`Error del servidor: ${res.status} ${res.statusText}`);
       }
 
-      const { jobId } = await compareResponse.json();
-
-      // Poll for completion
-      const comparisonId = await waitForComparison(jobId);
-
-      // Get results
-      const resultResponse = await fetch(`${COMPARATOR_API}/projects/${comparisonId}/summary`);
-
-      if (!resultResponse.ok) {
-        throw new Error('Failed to get results');
-      }
-
-      const resultData = await resultResponse.json();
-      setResult(resultData);
-
+      const data: CompareResponseBody = await res.json();
+      setResult(data);
+      setPhase('result');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Comparison failed');
-    } finally {
-      setComparing(false);
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+      setPhase('input');
     }
   };
 
-  // Wait for comparison job
-  const waitForComparison = async (jobId: string, maxAttempts = 60): Promise<string> => {
-    for (let i = 0; i < maxAttempts; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      const response = await fetch(`${COMPARATOR_API}/comparison/jobs/${jobId}`);
-      const data = await response.json();
-
-      if (data.state === 'completed' && data.returnvalue) {
-        return data.returnvalue.comparisonId;
-      }
-
-      if (data.state === 'failed') {
-        throw new Error('Comparison job failed');
-      }
-    }
-
-    throw new Error('Comparison timeout');
+  const handleReset = () => {
+    setPhase('input');
+    setResult(null);
+    setError(null);
   };
 
-  // Drag and drop handlers
-  const handleDrop = useCallback((e: React.DragEvent, type: 'source' | 'target') => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file) {
-      if (type === 'source') {
-        setSourceFile(file);
-        handleFileUpload(file, 'source');
-      } else {
-        setTargetFile(file);
-        handleFileUpload(file, 'target');
-      }
-    }
-  }, []);
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
-      <header>
-        <h1 className="text-3xl font-bold text-gray-900">Comparador de Leyes</h1>
-        <p className="text-gray-600 mt-1">Compara versiones de documentos legislativos y detecta cambios semánticos.</p>
+    <div className="flex flex-col h-full min-h-screen bg-gray-50">
+      {/* ── Header ── */}
+      <header className="px-8 pt-8 pb-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Comparador de Leyes</h1>
+          <p className="text-gray-500 mt-1 text-sm">
+            Ingresa dos textos legislativos para analizar cambios e impacto jurídico con IA.
+          </p>
+        </div>
+        {phase === 'result' && (
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Nueva Comparación
+          </button>
+        )}
       </header>
 
-      {/* Tabs */}
-      <div className="flex gap-2 border-b border-gray-200">
-        <button
-          onClick={() => setActiveTab('upload')}
-          className={`px-4 py-2 font-medium border-b-2 transition-colors ${
-            activeTab === 'upload'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Upload className="inline w-4 h-4 mr-2" />
-          Subir Archivos
-        </button>
-        <button
-          onClick={() => setActiveTab('text')}
-          className={`px-4 py-2 font-medium border-b-2 transition-colors ${
-            activeTab === 'text'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <FileText className="inline w-4 h-4 mr-2" />
-          Pegar Texto
-        </button>
-      </div>
-
-      {/* Error Display */}
+      {/* ── Error Banner ── */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
+        <div className="mx-8 mb-4 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
           <div>
-            <h3 className="font-medium text-red-900">Error</h3>
-            <p className="text-red-700 text-sm mt-1">{error}</p>
+            <p className="font-medium text-red-900 text-sm">Error al procesar</p>
+            <p className="text-red-700 text-sm mt-0.5">{error}</p>
           </div>
         </div>
       )}
 
-      {/* Upload Tab */}
-      {activeTab === 'upload' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Source Document */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Documento Original</h3>
-
-            <div
-              onDrop={(e) => handleDrop(e, 'source')}
-              onDragOver={handleDragOver}
-              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-                uploadingSource
-                  ? 'border-blue-400 bg-blue-50'
-                  : 'border-gray-300 hover:border-gray-400'
-              }`}
-            >
-              {uploadingSource ? (
-                <div className="space-y-3">
-                  <Loader2 className="w-12 h-12 text-blue-600 mx-auto animate-spin" />
-                  <p className="text-sm text-gray-600">Procesando documento...</p>
-                </div>
-              ) : sourceDoc ? (
-                <div className="space-y-3">
-                  <CheckCircle className="w-12 h-12 text-green-600 mx-auto" />
-                  <div>
-                    <p className="font-medium text-gray-900">{sourceDoc.fileName}</p>
-                    <p className="text-sm text-gray-500">{sourceDoc.wordCount.toLocaleString()} palabras</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setSourceFile(null);
-                      setSourceDoc(null);
-                    }}
-                    className="text-sm text-blue-600 hover:text-blue-700"
-                  >
-                    Cambiar archivo
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <Upload className="w-12 h-12 text-gray-400 mx-auto" />
-                  <div>
-                    <p className="text-sm font-medium text-gray-700">Arrastra un archivo aquí</p>
-                    <p className="text-xs text-gray-500 mt-1">o haz clic para seleccionar</p>
-                  </div>
-                  <p className="text-xs text-gray-400">Word, PDF, TXT (max 10MB)</p>
-                  <input
-                    type="file"
-                    accept=".doc,.docx,.pdf,.txt"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        setSourceFile(file);
-                        handleFileUpload(file, 'source');
-                      }
-                    }}
-                    className="hidden"
-                    id="source-file"
-                  />
-                  <label
-                    htmlFor="source-file"
-                    className="inline-block px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 cursor-pointer"
-                  >
-                    Seleccionar Archivo
-                  </label>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Target Document */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Documento Nuevo</h3>
-
-            <div
-              onDrop={(e) => handleDrop(e, 'target')}
-              onDragOver={handleDragOver}
-              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-                uploadingTarget
-                  ? 'border-blue-400 bg-blue-50'
-                  : 'border-gray-300 hover:border-gray-400'
-              }`}
-            >
-              {uploadingTarget ? (
-                <div className="space-y-3">
-                  <Loader2 className="w-12 h-12 text-blue-600 mx-auto animate-spin" />
-                  <p className="text-sm text-gray-600">Procesando documento...</p>
-                </div>
-              ) : targetDoc ? (
-                <div className="space-y-3">
-                  <CheckCircle className="w-12 h-12 text-green-600 mx-auto" />
-                  <div>
-                    <p className="font-medium text-gray-900">{targetDoc.fileName}</p>
-                    <p className="text-sm text-gray-500">{targetDoc.wordCount.toLocaleString()} palabras</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setTargetFile(null);
-                      setTargetDoc(null);
-                    }}
-                    className="text-sm text-blue-600 hover:text-blue-700"
-                  >
-                    Cambiar archivo
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <Upload className="w-12 h-12 text-gray-400 mx-auto" />
-                  <div>
-                    <p className="text-sm font-medium text-gray-700">Arrastra un archivo aquí</p>
-                    <p className="text-xs text-gray-500 mt-1">o haz clic para seleccionar</p>
-                  </div>
-                  <p className="text-xs text-gray-400">Word, PDF, TXT (max 10MB)</p>
-                  <input
-                    type="file"
-                    accept=".doc,.docx,.pdf,.txt"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        setTargetFile(file);
-                        handleFileUpload(file, 'target');
-                      }
-                    }}
-                    className="hidden"
-                    id="target-file"
-                  />
-                  <label
-                    htmlFor="target-file"
-                    className="inline-block px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 cursor-pointer"
-                  >
-                    Seleccionar Archivo
-                  </label>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Text Tab */}
-      {activeTab === 'text' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Texto Original</h3>
-            <textarea
-              className="w-full h-80 p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
-              placeholder="Pega el texto original aquí..."
-              value={sourceText}
-              onChange={(e) => setSourceText(e.target.value)}
-            />
-          </div>
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Texto Nuevo</h3>
-            <textarea
-              className="w-full h-80 p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
-              placeholder="Pega el texto nuevo aquí..."
-              value={targetText}
-              onChange={(e) => setTargetText(e.target.value)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Compare Button */}
-      <div className="flex justify-center">
-        <button
-          onClick={handleCompare}
-          disabled={
-            comparing ||
-            (activeTab === 'upload' && (!sourceDoc || !targetDoc)) ||
-            (activeTab === 'text' && (!sourceText || !targetText))
-          }
-          className={`px-8 py-3 rounded-lg font-semibold text-white transition-colors ${
-            comparing ||
-            (activeTab === 'upload' && (!sourceDoc || !targetDoc)) ||
-            (activeTab === 'text' && (!sourceText || !targetText))
-              ? 'bg-gray-400 cursor-not-allowed'
-              : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-lg'
-          }`}
-        >
-          {comparing ? (
-            <>
-              <Loader2 className="inline w-5 h-5 mr-2 animate-spin" />
-              Comparando Documentos...
-            </>
-          ) : (
-            'Comparar Documentos'
-          )}
-        </button>
-      </div>
-
-      {/* Results */}
-      {result && (
-        <div className="space-y-6">
-          {/* Summary Card */}
-          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 border border-blue-200">
-            <div className="flex items-start justify-between">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">Resumen de Comparación</h2>
-                <p className="text-gray-600 mt-1">
-                  {result.sourceDocument.title} → {result.targetDocument.title}
-                </p>
+      {/* ══════════════════════════════════════════════════════════════════════
+          PHASE: INPUT
+      ══════════════════════════════════════════════════════════════════════ */}
+      {(phase === 'input' || phase === 'loading') && (
+        <div className="flex-1 flex flex-col px-8 pb-8 gap-6">
+          {/* Text Areas */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1">
+            {/* Estatuto Vigente */}
+            <div className="flex flex-col bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50">
+                <h2 className="font-semibold text-gray-800 text-sm">Estatuto Vigente</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Pega aquí el texto original de la ley</p>
               </div>
-              <div className="text-right">
-                <div className="text-3xl font-bold text-blue-600">{result.impactScore}</div>
-                <div className="text-sm text-gray-600">Impact Score</div>
+              <textarea
+                className="flex-1 p-4 font-mono text-sm text-gray-800 resize-none focus:outline-none placeholder:text-gray-400 min-h-[360px]"
+                placeholder="Artículo 1. — La presente Ley tiene por objeto…"
+                value={originalText}
+                onChange={(e) => setOriginalText(e.target.value)}
+                disabled={phase === 'loading'}
+              />
+              <div className="px-5 py-2 border-t border-gray-100 bg-gray-50 text-xs text-gray-400 text-right">
+                {originalText.length.toLocaleString()} caracteres
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4 mt-6">
-              <div className="bg-white rounded-lg p-4 text-center">
-                <div className="text-2xl font-bold text-gray-900">{result.totalChanges}</div>
-                <div className="text-sm text-gray-600">Total de Cambios</div>
+            {/* Propuesta de Enmienda */}
+            <div className="flex flex-col bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50">
+                <h2 className="font-semibold text-gray-800 text-sm">Propuesta de Enmienda</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Pega aquí el texto de la enmienda propuesta</p>
               </div>
-              <div className="bg-white rounded-lg p-4 text-center">
-                <div className="text-2xl font-bold text-green-600">
-                  {result.chunkComparisons.filter(c => c.changeType === 'scope_expansion').length}
-                </div>
-                <div className="text-sm text-gray-600">Expansiones</div>
-              </div>
-              <div className="bg-white rounded-lg p-4 text-center">
-                <div className="text-2xl font-bold text-red-600">
-                  {result.chunkComparisons.filter(c => c.changeType === 'obligation_shift').length}
-                </div>
-                <div className="text-sm text-gray-600">Cambios Críticos</div>
+              <textarea
+                className="flex-1 p-4 font-mono text-sm text-gray-800 resize-none focus:outline-none placeholder:text-gray-400 min-h-[360px]"
+                placeholder="Artículo 1. — Se enmienda la Ley para disponer que…"
+                value={modifiedText}
+                onChange={(e) => setModifiedText(e.target.value)}
+                disabled={phase === 'loading'}
+              />
+              <div className="px-5 py-2 border-t border-gray-100 bg-gray-50 text-xs text-gray-400 text-right">
+                {modifiedText.length.toLocaleString()} caracteres
               </div>
             </div>
-
-            {result.summary && (
-              <div className="mt-4 p-4 bg-white rounded-lg">
-                <h3 className="font-semibold text-gray-900 mb-2">Resumen Ejecutivo</h3>
-                <p className="text-gray-700">{result.summary}</p>
-              </div>
-            )}
           </div>
 
-          {/* Diff View */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-            <div className="p-6 border-b border-gray-200">
-              <h3 className="font-semibold text-gray-900">Cambios Detectados</h3>
-              <p className="text-sm text-gray-600 mt-1">Cambios resaltados por chunk</p>
-            </div>
-
-            <div className="divide-y divide-gray-200">
-              {result.chunkComparisons.slice(0, 10).map((chunk, idx) => (
-                <div key={idx} className="p-6">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-700">Chunk #{idx + 1}</span>
-                      {chunk.changeType && (
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                          chunk.changeType === 'obligation_shift'
-                            ? 'bg-red-100 text-red-700'
-                            : chunk.changeType === 'scope_expansion'
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-blue-100 text-blue-700'
-                        }`}>
-                          {chunk.changeType.replace('_', ' ')}
-                        </span>
-                      )}
-                    </div>
-                    {chunk.impactScore !== undefined && (
-                      <span className="text-sm font-medium text-gray-600">
-                        Impact: {(chunk.impactScore * 100).toFixed(0)}%
-                      </span>
-                    )}
-                  </div>
-
-                  <div
-                    className="prose prose-sm max-w-none"
-                    dangerouslySetInnerHTML={{ __html: chunk.diffHtml }}
-                    style={{
-                      fontFamily: 'monospace',
-                      fontSize: '14px',
-                      lineHeight: '1.6',
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
-
-            {result.chunkComparisons.length > 10 && (
-              <div className="p-4 bg-gray-50 text-center text-sm text-gray-600">
-                Mostrando 10 de {result.chunkComparisons.length} cambios.
-                Exporta el reporte para ver todos.
-              </div>
-            )}
-          </div>
-
-          {/* Export Button */}
+          {/* CTA Button */}
           <div className="flex justify-center">
             <button
-              onClick={async () => {
-                const response = await fetch(`${COMPARATOR_API}/projects/${result.comparisonId}/export`);
-                const data = await response.json();
-                alert(data.message);
-              }}
-              className="px-6 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+              onClick={handleAnalyze}
+              disabled={phase === 'loading' || !originalText.trim() || !modifiedText.trim()}
+              className={`inline-flex items-center gap-3 px-10 py-3.5 rounded-xl font-semibold text-base transition-all shadow-lg ${
+                phase === 'loading' || !originalText.trim() || !modifiedText.trim()
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed shadow-none'
+                  : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white hover:shadow-xl'
+              }`}
             >
-              Exportar Reporte PDF
+              {phase === 'loading' ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Analizando impacto…
+                </>
+              ) : (
+                <>
+                  <FileText className="w-5 h-5" />
+                  Analizar Impacto y Comparar
+                </>
+              )}
             </button>
           </div>
         </div>
       )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          PHASE: RESULT — Split-screen (Monaco 70% + AI Sidebar 30%)
+      ══════════════════════════════════════════════════════════════════════ */}
+      {phase === 'result' && result && (
+        <div className="flex flex-1 min-h-0 px-8 pb-8 gap-6">
+          {/* ── Monaco DiffEditor (70%) ── */}
+          <div className="flex flex-col rounded-xl shadow-sm border border-gray-200 overflow-hidden bg-white" style={{ flex: '0 0 70%' }}>
+            <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-3">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-100 text-red-700 text-xs font-medium">
+                <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                Estatuto Vigente
+              </span>
+              <span className="text-gray-300">→</span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-green-100 text-green-700 text-xs font-medium">
+                <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+                Propuesta de Enmienda
+              </span>
+            </div>
+            <div className="flex-1 min-h-[600px]">
+              <DiffEditor
+                original={originalText}
+                modified={modifiedText}
+                language="plaintext"
+                options={{
+                  readOnly: true,
+                  wordWrap: 'on',
+                  renderSideBySide: true,
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  diffWordWrap: 'on',
+                }}
+                theme="light"
+              />
+            </div>
+          </div>
+
+          {/* ── AI Intelligence Panel (30%) ── */}
+          <div className="flex flex-col gap-4 overflow-y-auto" style={{ flex: '0 0 30%' }}>
+            {/* AI warning if no key */}
+            {result.error && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <p className="text-amber-800 text-xs">{result.error}</p>
+              </div>
+            )}
+
+            {result.aiAnalysis ? (
+              <AiPanel analysis={result.aiAnalysis} />
+            ) : (
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center text-gray-400 text-sm">
+                <FileText className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                Análisis de IA no disponible.<br />
+                Configure <code className="bg-gray-100 px-1 rounded text-xs">OPENAI_API_KEY</code> para habilitarlo.
+              </div>
+            )}
+
+            {/* Raw diff stats */}
+            <DiffStats diffs={result.diffs} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function AiPanel({ analysis }: { analysis: AiAnalysis }) {
+  return (
+    <>
+      {/* Executive Summary */}
+      <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200 p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-3">
+          <FileText className="w-4 h-4 text-blue-600" />
+          <h3 className="font-semibold text-blue-900 text-sm">Resumen Ejecutivo</h3>
+        </div>
+        <p className="text-gray-700 text-sm leading-relaxed">{analysis.executive_summary}</p>
+      </div>
+
+      {/* Stakeholders */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-3">
+          <Users className="w-4 h-4 text-indigo-600" />
+          <h3 className="font-semibold text-gray-800 text-sm">Partes Afectadas</h3>
+        </div>
+        {Array.isArray(analysis.stakeholders_affected) && analysis.stakeholders_affected.length > 0 ? (
+          <ul className="space-y-2">
+            {analysis.stakeholders_affected.map((stakeholder, idx) => (
+              <li key={idx} className="flex items-start gap-2">
+                <span className="mt-1.5 w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0" />
+                <span className="text-gray-700 text-sm">{stakeholder}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-gray-400 text-sm">No se identificaron partes afectadas.</p>
+        )}
+      </div>
+
+      {/* Long-term Forecast */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-3">
+          <TrendingUp className="w-4 h-4 text-emerald-600" />
+          <h3 className="font-semibold text-gray-800 text-sm">Pronóstico a Largo Plazo</h3>
+        </div>
+        <p className="text-gray-700 text-sm leading-relaxed">{analysis.long_term_forecast}</p>
+      </div>
+    </>
+  );
+}
+
+function DiffStats({ diffs }: { diffs: Array<{ op: number; text: string }> }) {
+  const inserted = diffs.filter((d) => d.op === 1).reduce((acc, d) => acc + d.text.length, 0);
+  const deleted = diffs.filter((d) => d.op === -1).reduce((acc, d) => acc + d.text.length, 0);
+  const unchanged = diffs.filter((d) => d.op === 0).reduce((acc, d) => acc + d.text.length, 0);
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+      <h3 className="font-semibold text-gray-800 text-sm mb-3">Estadísticas de Cambios</h3>
+      <div className="space-y-2">
+        <StatRow label="Texto añadido" value={`${inserted.toLocaleString()} car.`} color="text-green-600" dot="bg-green-500" />
+        <StatRow label="Texto eliminado" value={`${deleted.toLocaleString()} car.`} color="text-red-600" dot="bg-red-500" />
+        <StatRow label="Sin cambios" value={`${unchanged.toLocaleString()} car.`} color="text-gray-500" dot="bg-gray-300" />
+        <div className="pt-2 border-t border-gray-100 mt-2">
+          <StatRow
+            label="Total de segmentos"
+            value={`${diffs.length}`}
+            color="text-blue-600"
+            dot="bg-blue-400"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatRow({
+  label,
+  value,
+  color,
+  dot,
+}: {
+  label: string;
+  value: string;
+  color: string;
+  dot: string;
+}) {
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="flex items-center gap-2 text-gray-600">
+        <span className={`w-2 h-2 rounded-full ${dot} flex-shrink-0`} />
+        {label}
+      </span>
+      <span className={`font-medium ${color}`}>{value}</span>
     </div>
   );
 }
