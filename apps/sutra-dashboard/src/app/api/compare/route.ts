@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { DiffMatchPatch, DiffOp, type Diff } from 'diff-match-patch-ts';
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export interface CompareRequestBody {
   originalText: string;
@@ -37,7 +37,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<CompareRespon
 
   if (typeof originalText !== 'string' || typeof modifiedText !== 'string') {
     return NextResponse.json(
-      { diffs: [], addedText: '', deletedText: '', aiAnalysis: null, error: 'originalText and modifiedText are required strings' },
+      {
+        diffs: [],
+        addedText: '',
+        deletedText: '',
+        aiAnalysis: null,
+        error: 'originalText and modifiedText are required strings',
+      },
       { status: 400 },
     );
   }
@@ -59,22 +65,20 @@ export async function POST(req: NextRequest): Promise<NextResponse<CompareRespon
 
   const serialisedDiffs = diffs.map(([op, text]) => ({ op, text }));
 
-  // ─── Phase 3: AI analysis ────────────────────────────────────────────────────
+  // ─── Phase 3: AI analysis via Gemini ─────────────────────────────────────────
   let aiAnalysis: AiAnalysis | null = null;
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
 
   if (apiKey && addedText.length + deletedText.length > 0) {
     try {
-      const openai = new OpenAI({ apiKey });
-
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content: `Eres un analista experto en políticas públicas y derecho legislativo.
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-1.5-pro',
+        generationConfig: {
+          responseMimeType: 'application/json',
+        },
+        systemInstruction: `Eres un analista experto en políticas públicas y derecho legislativo.
 Se te proporcionan fragmentos de texto eliminados y añadidos resultantes de la comparación entre
 un estatuto vigente y una propuesta de enmienda.
 Tu tarea es analizar el impacto jurídico, político y económico de estos cambios.
@@ -84,25 +88,21 @@ Responde ÚNICAMENTE con un objeto JSON válido que siga este esquema exacto:
   "stakeholders_affected": ["lista", "de", "partes", "afectadas"],
   "long_term_forecast": "Predicción de las consecuencias a largo plazo en política o economía"
 }`,
-          },
-          {
-            role: 'user',
-            content: `TEXTO ELIMINADO (estatuto vigente):\n${deletedText || '(ninguno)'}\n\nTEXTO AÑADIDO (propuesta de enmienda):\n${addedText || '(ninguno)'}`,
-          },
-        ],
       });
 
-      const raw = completion.choices[0]?.message?.content ?? '{}';
+      const prompt = `TEXTO ELIMINADO (estatuto vigente):\n${deletedText || '(ninguno)'}\n\nTEXTO AÑADIDO (propuesta de enmienda):\n${addedText || '(ninguno)'}`;
+
+      const result = await model.generateContent(prompt);
+      const raw = result.response.text();
       aiAnalysis = JSON.parse(raw) as AiAnalysis;
     } catch (err) {
-      console.error('[compare/route] OpenAI error:', err);
-      // Return diffs even if AI fails; surface error in response field
+      console.error('[compare/route] Gemini error:', err);
       return NextResponse.json({
         diffs: serialisedDiffs,
         addedText,
         deletedText,
         aiAnalysis: null,
-        error: 'Análisis de IA no disponible. Verifique la variable OPENAI_API_KEY.',
+        error: 'Análisis de IA no disponible. Verifique la variable GEMINI_API_KEY.',
       });
     }
   }

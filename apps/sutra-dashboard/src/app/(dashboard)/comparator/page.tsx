@@ -218,7 +218,7 @@ export default function ComparatorPage() {
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center text-gray-400 text-sm">
                 <FileText className="w-8 h-8 mx-auto mb-2 text-gray-300" />
                 Análisis de IA no disponible.<br />
-                Configure <code className="bg-gray-100 px-1 rounded text-xs">OPENAI_API_KEY</code> para habilitarlo.
+                Configure <code className="bg-gray-100 px-1 rounded text-xs">GEMINI_API_KEY</code> para habilitarlo.
               </div>
             )}
 
